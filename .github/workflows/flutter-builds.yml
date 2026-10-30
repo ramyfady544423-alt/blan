@@ -1,0 +1,196 @@
+
+name: Flutter Multi-Platform Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+
+  # =========================
+  # ANDROID APK
+  # =========================
+  android:
+    name: Build Android APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-APK
+          path: build/app/outputs/flutter-apk/*.apk
+
+  # =========================
+  # WINDOWS EXE
+  # =========================
+  windows:
+    name: Build Windows EXE
+    runs-on: windows-2022
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Enable Windows
+        run: flutter config --enable-windows-desktop
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Windows
+        run: flutter build windows --release
+
+      - name: Compress Windows Application
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path build/windows/x64/runner/Release/* `
+            -DestinationPath windows-release.zip `
+            -Force
+
+      - name: Upload Windows Application
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-EXE
+          path: windows-release.zip
+
+  # =========================
+  # LINUX APPLICATION
+  # =========================
+  linux:
+    name: Build Linux Application
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libgtk-3-dev \
+            liblzma-dev
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Enable Linux
+        run: flutter config --enable-linux-desktop
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Linux
+        run: flutter build linux --release
+
+      - name: Compress Linux Application
+        run: |
+          tar -czf linux-release.tar.gz \
+            -C build/linux/x64/release bundle
+
+      - name: Upload Linux Application
+        uses: actions/upload-artifact@v4
+        with:
+          name: Linux-Application
+          path: linux-release.tar.gz
+
+  # =========================
+  # PUBLISH SUCCESSFUL BUILDS
+  # =========================
+  release:
+    name: Publish Successful Builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    if: always() && !cancelled()
+
+    needs:
+      - android
+      - windows
+      - linux
+
+    steps:
+      - name: Download Android APK
+        if: needs.android.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: Android-APK
+          path: dist/Android-APK
+
+      - name: Download Windows Application
+        if: needs.windows.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: Windows-EXE
+          path: dist/Windows-EXE
+
+      - name: Download Linux Application
+        if: needs.linux.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: Linux-Application
+          path: dist/Linux-Application
+
+      - name: Check Available Builds
+        id: check
+        shell: bash
+        run: |
+          mkdir -p dist
+
+          if find dist -type f -print -quit | grep -q .; then
+            echo "has_files=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_files=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release
+        if: steps.check.outputs.has_files == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Build #${{ github.run_number }}"
+          body: |
+            Automatic Flutter application build.
+
+            Only successfully built platforms are included.
+          files: |
+            dist/Android-APK/*.apk
+            dist/Windows-EXE/*.zip
+            dist/Linux-Application/*.tar.gz
+          make_latest: true
+          fail_on_unmatched_files: false
